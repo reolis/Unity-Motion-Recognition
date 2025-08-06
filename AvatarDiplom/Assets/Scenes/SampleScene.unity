@@ -1481,9 +1481,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 88770ff2a425b504c90d51b562b30865, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  shoulder: {fileID: 0}
-  upperArm: {fileID: 0}
-  forearm: {fileID: 0}
   hand: {fileID: 377053147}
   thumb1: {fileID: 1526643439}
   thumb2: {fileID: 624639000}
@@ -2075,6 +2072,9 @@ MonoBehaviour:
   bodyDataTimeout: 1
   leftHandOffset: {x: -0.3, y: 0, z: 0.5}
   rightHandOffset: {x: 0.3, y: 0, z: 0.5}
+  leftPositionOffset: {x: 0, y: 0, z: 0}
+  rightPositionOffset: {x: 0, y: 0, z: 0}
+  useAIHands: 1
 --- !u!4 &2118326815 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: -3494375403550423450, guid: f1e8e1bfafe7fa241ba6b4181f3eba85, type: 3}

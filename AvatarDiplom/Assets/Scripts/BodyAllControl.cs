@@ -43,15 +43,24 @@ public class BodyControl : MonoBehaviour
     private float lastRightUpdateTime;
     private float lastBodyUpdateTime;
 
-    public Vector3 leftHandOffset = new Vector3(-0.3f, 0f, 0.5f);
-    public Vector3 rightHandOffset = new Vector3(0.3f, 0f, 0.5f);
+    public Vector3 leftHandOffset = new Vector3(-0.3f, 0f, -0.5f);
+    public Vector3 rightHandOffset = new Vector3(0.3f, 0f, -0.5f);
 
     public Vector3 leftPositionOffset = Vector3.zero;
     public Vector3 rightPositionOffset = Vector3.zero;
 
-    private HandMovementAI leftHandAI = new HandMovementAI();
-    private HandMovementAI rightHandAI = new HandMovementAI();
+    private PosePredictor leftPredictor = new PosePredictor();
+    private PosePredictor rightPredictor = new PosePredictor();
+
+    private HandMovementAI leftHandAI;
+    private HandMovementAI rightHandAI;
     public bool useAIHands = true;
+
+    private Skeleton leftSkeleton;
+    private Skeleton rightSkeleton;
+
+    private Dictionary<string, Vector3> basePositions;
+    private Dictionary<string, Quaternion> baseRotations;
 
     Dictionary<string, Vector3> previousPositions = new Dictionary<string, Vector3>();
 
@@ -80,6 +89,21 @@ public class BodyControl : MonoBehaviour
             { "B-neck", neckTarget },
             { "B-head", headTarget }
         };
+
+        leftSkeleton = new Skeleton();
+        leftSkeleton.AddBone("B-shoulder.L", null, shoulderLTarget.localPosition);
+        leftSkeleton.AddBone("B-upperArm.L", "B-shoulder.L", upperArmLTarget.localPosition - shoulderLTarget.localPosition);
+        leftSkeleton.AddBone("B-forearm.L", "B-upperArm.L", forearmLTarget.localPosition - upperArmLTarget.localPosition);
+        leftSkeleton.AddBone("B-hand.L", "B-forearm.L", handLTarget.localPosition - forearmLTarget.localPosition);
+
+        rightSkeleton = new Skeleton();
+        rightSkeleton.AddBone("B-shoulder.R", null, shoulderRTarget.localPosition);
+        rightSkeleton.AddBone("B-upperArm.R", "B-shoulder.R", upperArmRTarget.localPosition - shoulderRTarget.localPosition);
+        rightSkeleton.AddBone("B-forearm.R", "B-upperArm.R", forearmRTarget.localPosition - upperArmRTarget.localPosition);
+        rightSkeleton.AddBone("B-hand.R", "B-forearm.R", handRTarget.localPosition - forearmRTarget.localPosition);
+
+        leftHandAI = new HandMovementAI(leftSkeleton);
+        rightHandAI = new HandMovementAI(rightSkeleton);
     }
 
     void Update()
@@ -88,31 +112,21 @@ public class BodyControl : MonoBehaviour
         var rightPositions = GetUpdatedPositions(ConnectToApp.rightPoseQueue, ".R", ref lastRightUpdateTime, rightPositionOffset, true);
 
         if (leftPositions.Count > 0)
-            leftHandAI.AddTrainingSample(leftPositions);
-
-        if (rightPositions.Count > 0)
-            rightHandAI.AddTrainingSample(rightPositions);
-
-        if (useAIHands)
         {
-            leftPositions = leftHandAI.GenerateMovement(leftPositions);
-            rightPositions = rightHandAI.GenerateMovement(rightPositions);
+            leftHandAI.AddTrainingSample(leftPositions);
+            leftHandAI.ApplyLearnedPose();
+            leftPositions = leftHandAI.GetWorldPose();
         }
 
-        AdjustHandPositions(leftPositions, leftHandOffset, ".L");
-        AdjustHandPositions(rightPositions, rightHandOffset, ".R");
-
-        LowerHandsOverTime(leftPositions, lastLeftUpdateTime);
-        LowerHandsOverTime(rightPositions, lastRightUpdateTime);
+        if (rightPositions.Count > 0)
+        {
+            rightHandAI.AddTrainingSample(rightPositions);
+            rightHandAI.ApplyLearnedPose();
+            rightPositions = rightHandAI.GetWorldPose();
+        }
 
         UpdateBoneRotationsFromPositions(leftTargets, leftPositions, ".L");
         UpdateBoneRotationsFromPositions(rightTargets, rightPositions, ".R");
-
-        if (Time.time - lastLeftUpdateTime > leftDataTimeout)
-            PhysicsForArms.SimulateHangingArm(leftTargets, true);
-
-        if (Time.time - lastRightUpdateTime > rightDataTimeout)
-            PhysicsForArms.SimulateHangingArm(rightTargets, false);
     }
 
     void LowerHandsOverTime(Dictionary<string, Vector3> handPositions, float lastUpdateTime)
@@ -147,8 +161,11 @@ public class BodyControl : MonoBehaviour
             Vector3 pos = boneData.position;
 
             if (mirrorX)
+            {
                 pos.z = -pos.z;
-
+                pos.y = -pos.y;
+            }
+                
             pos = pos * positionScale + customOffset;
 
             positions[boneData.boneName] = pos;
@@ -175,9 +192,11 @@ public class BodyControl : MonoBehaviour
                 positions.TryGetValue(to, out var toPos))
             {
                 Vector3 dir = toPos - fromPos;
+                dir.z = -dir.z;
+                dir.y = -dir.y;
                 if (dir.sqrMagnitude > 0.0001f)
                 {
-                    Quaternion rot = Quaternion.LookRotation(dir.normalized, Vector3.Cross(Vector3.right, dir.normalized));
+                    Quaternion rot = Quaternion.LookRotation(dir.normalized, Vector3.Cross(Vector3.left, dir.normalized));
                     fromT.rotation = Quaternion.Slerp(fromT.rotation, rot, rotationSmoothFactor);
                 }
             }
@@ -197,9 +216,11 @@ public class BodyControl : MonoBehaviour
                     positions.TryGetValue(to, out var toPos))
                 {
                     Vector3 dir = toPos - fromPos;
+                    dir.z = -dir.z;
+                    dir.y = -dir.y;
                     if (dir.sqrMagnitude > 0.0001f)
                     {
-                        Quaternion rot = Quaternion.LookRotation(dir.normalized, Vector3.up);
+                        Quaternion rot = Quaternion.LookRotation(dir.normalized, Vector3.down);
                         fromT.rotation = Quaternion.Slerp(fromT.rotation, rot, rotationSmoothFactor);
                     }
                 }
@@ -211,7 +232,7 @@ public class BodyControl : MonoBehaviour
     {
         if (playerTransform == null) return;
 
-        Vector3 forward = playerTransform.forward;
+        Vector3 forward = -playerTransform.forward;
         Vector3 right = playerTransform.right;
         Vector3 up = playerTransform.up;
 

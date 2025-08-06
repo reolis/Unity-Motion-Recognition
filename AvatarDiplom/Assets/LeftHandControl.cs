@@ -12,6 +12,8 @@ public class LeftHandControl : MonoBehaviour
     public Transform pinky1, pinky2, pinky3;
 
     private Dictionary<string, Transform> bones;
+    private Skeleton leftSkeleton;
+    private HandMovementAI handAI;
 
     void Start()
     {
@@ -39,6 +41,32 @@ public class LeftHandControl : MonoBehaviour
             { "B-pinky2.L", pinky2 },
             { "B-pinky3.L", pinky3 }
         };
+
+        leftSkeleton = new Skeleton();
+
+        leftSkeleton.AddBone("B-hand.L", null, hand.localPosition);
+
+        leftSkeleton.AddBone("B-thumb1.L", "B-hand.L", thumb1.localPosition - hand.localPosition);
+        leftSkeleton.AddBone("B-thumb2.L", "B-thumb1.L", thumb2.localPosition - thumb1.localPosition);
+        leftSkeleton.AddBone("B-thumb3.L", "B-thumb2.L", thumb3.localPosition - thumb2.localPosition);
+
+        leftSkeleton.AddBone("B-index1.L", "B-hand.L", index1.localPosition - hand.localPosition);
+        leftSkeleton.AddBone("B-index2.L", "B-index1.L", index2.localPosition - index1.localPosition);
+        leftSkeleton.AddBone("B-index3.L", "B-index2.L", index3.localPosition - index2.localPosition);
+
+        leftSkeleton.AddBone("B-middle1.L", "B-hand.L", middle1.localPosition - hand.localPosition);
+        leftSkeleton.AddBone("B-middle2.L", "B-middle1.L", middle2.localPosition - middle1.localPosition);
+        leftSkeleton.AddBone("B-middle3.L", "B-middle2.L", middle3.localPosition - middle2.localPosition);
+
+        leftSkeleton.AddBone("B-ring1.L", "B-hand.L", ring1.localPosition - hand.localPosition);
+        leftSkeleton.AddBone("B-ring2.L", "B-ring1.L", ring2.localPosition - ring1.localPosition);
+        leftSkeleton.AddBone("B-ring3.L", "B-ring2.L", ring3.localPosition - ring2.localPosition);
+
+        leftSkeleton.AddBone("B-pinky1.L", "B-hand.L", pinky1.localPosition - hand.localPosition);
+        leftSkeleton.AddBone("B-pinky2.L", "B-pinky1.L", pinky2.localPosition - pinky1.localPosition);
+        leftSkeleton.AddBone("B-pinky3.L", "B-pinky2.L", pinky3.localPosition - pinky2.localPosition);
+
+        handAI = new HandMovementAI(leftSkeleton);
     }
 
     void Update()
@@ -49,56 +77,21 @@ public class LeftHandControl : MonoBehaviour
         {
             if (!boneData.boneName.EndsWith(".L")) continue;
 
-            Vector3 rawPos = boneData.position;
-
-            newPositions[boneData.boneName] = rawPos;
+            newPositions[boneData.boneName] = boneData.position;
         }
 
-        UpdateFingerRotation("B-thumb1.L", "B-thumb2.L", newPositions);
-        UpdateFingerRotation("B-thumb2.L", "B-thumb3.L", newPositions);
-
-        UpdateFingerRotation("B-index1.L", "B-index2.L", newPositions);
-        UpdateFingerRotation("B-index2.L", "B-index3.L", newPositions);
-
-        UpdateFingerRotation("B-middle1.L", "B-middle2.L", newPositions);
-        UpdateFingerRotation("B-middle2.L", "B-middle3.L", newPositions);
-
-        UpdateFingerRotation("B-ring1.L", "B-ring2.L", newPositions);
-        UpdateFingerRotation("B-ring2.L", "B-ring3.L", newPositions);
-
-        UpdateFingerRotation("B-pinky1.L", "B-pinky2.L", newPositions);
-        UpdateFingerRotation("B-pinky2.L", "B-pinky3.L", newPositions);
-    }
-
-    private void UpdateFingerRotation(string jointA, string jointB, Dictionary<string, Vector3> positions)
-    {
-        if (bones.TryGetValue(jointA, out var boneA) &&
-            bones.TryGetValue(jointB, out var boneB) &&
-            boneA.parent != null)
+        if (newPositions.Count > 0)
         {
-            if (!positions.TryGetValue(jointA, out var posA)) return;
-            if (!positions.TryGetValue(jointB, out var posB)) return;
+            handAI.AddTrainingSample(newPositions);
+            handAI.ApplyLearnedPose();
 
-            Vector3 dirWorld = posB - posA;
-            if (dirWorld.sqrMagnitude > 0.0001f)
+            foreach (var kvp in bones)
             {
-                Vector3 dirLocal = boneA.parent.InverseTransformDirection(dirWorld.normalized);
+                if (!leftSkeleton.Bones.ContainsKey(kvp.Key)) continue;
 
-                Vector3 localForward = Vector3.right;
-
-                Quaternion targetLocalRot = Quaternion.FromToRotation(localForward, dirLocal);
-
-                targetLocalRot = ClampRotationAroundAxis(targetLocalRot, 0f, 90f);
-
-                boneA.localRotation = Quaternion.Slerp(boneA.localRotation, targetLocalRot, 0.3f);
+                var bone = leftSkeleton.Bones[kvp.Key];
+                kvp.Value.localRotation = bone.LocalRotation;
             }
         }
-    }
-
-    private Quaternion ClampRotationAroundAxis(Quaternion q, float minAngle, float maxAngle)
-    {
-        q.ToAngleAxis(out float angle, out Vector3 axis);
-        angle = Mathf.Clamp(angle, minAngle, maxAngle);
-        return Quaternion.AngleAxis(angle, axis);
     }
 }
