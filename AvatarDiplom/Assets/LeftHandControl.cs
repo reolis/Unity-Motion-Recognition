@@ -15,6 +15,9 @@ public class LeftHandControl : MonoBehaviour
     private Skeleton leftSkeleton;
     private HandMovementAI handAI;
 
+    private HandMovementAI palmAI;
+    private Dictionary<string, HandMovementAI> fingerAIs;
+
     void Start()
     {
         bones = new Dictionary<string, Transform>()
@@ -44,7 +47,7 @@ public class LeftHandControl : MonoBehaviour
 
         leftSkeleton = new Skeleton();
 
-        leftSkeleton.AddBone("B-hand.L", null, hand.localPosition);
+        leftSkeleton.AddBone("B-hand.L", null, Vector3.zero);
 
         leftSkeleton.AddBone("B-thumb1.L", "B-hand.L", thumb1.localPosition - hand.localPosition);
         leftSkeleton.AddBone("B-thumb2.L", "B-thumb1.L", thumb2.localPosition - thumb1.localPosition);
@@ -76,7 +79,6 @@ public class LeftHandControl : MonoBehaviour
         while (ConnectToApp.leftHandQueue.TryDequeue(out BoneData boneData))
         {
             if (!boneData.boneName.EndsWith(".L")) continue;
-
             newPositions[boneData.boneName] = boneData.position;
         }
 
@@ -88,7 +90,6 @@ public class LeftHandControl : MonoBehaviour
             foreach (var kvp in bones)
             {
                 if (!leftSkeleton.Bones.ContainsKey(kvp.Key)) continue;
-
                 var bone = leftSkeleton.Bones[kvp.Key];
                 kvp.Value.localRotation = bone.LocalRotation;
             }

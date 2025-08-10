@@ -64,6 +64,9 @@ public class BodyControl : MonoBehaviour
 
     Dictionary<string, Vector3> previousPositions = new Dictionary<string, Vector3>();
 
+    private Skeleton bodySkeleton;
+    private HandMovementAI bodyAI;
+
     void Start()
     {
         leftTargets = new Dictionary<string, Transform>
@@ -104,17 +107,28 @@ public class BodyControl : MonoBehaviour
 
         leftHandAI = new HandMovementAI(leftSkeleton);
         rightHandAI = new HandMovementAI(rightSkeleton);
+
+        bodySkeleton = new Skeleton();
+
+        bodySkeleton.AddBone("B-spine", null, spineTarget.localPosition);
+        bodySkeleton.AddBone("B-chest", "B-spine", chestTarget.localPosition - spineTarget.localPosition);
+        bodySkeleton.AddBone("B-neck", "B-chest", neckTarget.localPosition - chestTarget.localPosition);
+        bodySkeleton.AddBone("B-head", "B-neck", headTarget.localPosition - neckTarget.localPosition);
+
+        bodyAI = new HandMovementAI(bodySkeleton);
     }
 
-    void Update()
+    void FixedUpdate()
     {
         var leftPositions = GetUpdatedPositions(ConnectToApp.leftPoseQueue, ".L", ref lastLeftUpdateTime, leftPositionOffset, true);
         var rightPositions = GetUpdatedPositions(ConnectToApp.rightPoseQueue, ".R", ref lastRightUpdateTime, rightPositionOffset, true);
+        var bodyPositions = GetUpdatedPositions(ConnectToApp.bodyPoseQueue, "", ref lastBodyUpdateTime, positionOffset, false);
 
         if (leftPositions.Count > 0)
         {
             leftHandAI.AddTrainingSample(leftPositions);
             leftHandAI.ApplyLearnedPose();
+            leftHandAI.Update(Time.deltaTime);
             leftPositions = leftHandAI.GetWorldPose();
         }
 
@@ -122,27 +136,20 @@ public class BodyControl : MonoBehaviour
         {
             rightHandAI.AddTrainingSample(rightPositions);
             rightHandAI.ApplyLearnedPose();
+            rightHandAI.Update(Time.deltaTime);
             rightPositions = rightHandAI.GetWorldPose();
+        }
+
+        if (bodyPositions.Count > 0)
+        {
+            bodyAI.AddTrainingSample(bodyPositions);
+            bodyAI.ApplyLearnedPose();
+            bodyPositions = bodyAI.GetWorldPose();
         }
 
         UpdateBoneRotationsFromPositions(leftTargets, leftPositions, ".L");
         UpdateBoneRotationsFromPositions(rightTargets, rightPositions, ".R");
-    }
-
-    void LowerHandsOverTime(Dictionary<string, Vector3> handPositions, float lastUpdateTime)
-    {
-        float timeSinceUpdate = Time.time - lastUpdateTime;
-
-        float downFactor = Mathf.Clamp01(timeSinceUpdate / 2f);
-
-        Vector3 down = Vector3.down * 0.3f;
-
-        var keys = new List<string>(handPositions.Keys);
-
-        foreach (var key in keys)
-        {
-            handPositions[key] = Vector3.Lerp(handPositions[key], handPositions[key] + down, downFactor * 0.05f);
-        }
+        UpdateBoneRotationsFromPositions(bodyTargets, bodyPositions, "");
     }
 
     Dictionary<string, Vector3> GetUpdatedPositions(
@@ -159,13 +166,8 @@ public class BodyControl : MonoBehaviour
             if (!boneData.boneName.EndsWith(suffix)) continue;
 
             Vector3 pos = boneData.position;
-
-            if (mirrorX)
-            {
-                pos.z = -pos.z;
-                pos.y = -pos.y;
-            }
-                
+            pos.z = -pos.z;
+            pos.y = -pos.y;
             pos = pos * positionScale + customOffset;
 
             positions[boneData.boneName] = pos;
@@ -204,7 +206,7 @@ public class BodyControl : MonoBehaviour
 
         if (string.IsNullOrEmpty(suffix))
         {
-            string[] torsoChain = { "B-spine", "B-chest", "B-neck", "B-head" };
+            string[] torsoChain = { "B-head" };
             for (int i = 0; i < torsoChain.Length - 1; i++)
             {
                 string from = torsoChain[i];
@@ -216,8 +218,6 @@ public class BodyControl : MonoBehaviour
                     positions.TryGetValue(to, out var toPos))
                 {
                     Vector3 dir = toPos - fromPos;
-                    dir.z = -dir.z;
-                    dir.y = -dir.y;
                     if (dir.sqrMagnitude > 0.0001f)
                     {
                         Quaternion rot = Quaternion.LookRotation(dir.normalized, Vector3.down);
@@ -225,52 +225,6 @@ public class BodyControl : MonoBehaviour
                     }
                 }
             }
-        }
-    }
-
-    void AdjustHandPositions(Dictionary<string, Vector3> handPositions, Vector3 handOffset, string handPrefix)
-    {
-        if (playerTransform == null) return;
-
-        Vector3 forward = -playerTransform.forward;
-        Vector3 right = playerTransform.right;
-        Vector3 up = playerTransform.up;
-
-        Vector3 basePos = playerTransform.position
-                          + right * handOffset.x
-                          + up * handOffset.y
-                          + forward * handOffset.z;
-
-        foreach (var key in handPositions.Keys.ToList())
-        {
-            if (!key.StartsWith(handPrefix)) continue;
-
-            Vector3 currentPos = handPositions[key];
-
-            if (handPrefix == ".L")
-                currentPos.x -= 0.5f;
-            else if (handPrefix == ".R")
-                currentPos.x += 0.5f;
-
-            currentPos.z = -currentPos.z;
-
-            float distanceZ = currentPos.z;
-            float dynamicLerp = Mathf.Clamp01(1f - distanceZ);
-            float lerpFactor = Mathf.Lerp(0.05f, 0.2f, dynamicLerp);
-
-            if (previousPositions.TryGetValue(key, out Vector3 prev))
-                handPositions[key] = Vector3.Lerp(prev, currentPos, 0.15f);
-            else
-                handPositions[key] = currentPos;
-
-            previousPositions[key] = handPositions[key];
-
-            handPositions[key] = Smooth(currentPos, previousPositions[key], 0.15f);
-        }
-
-        Vector3 Smooth(Vector3 current, Vector3 previous, float smoothing)
-        {
-            return Vector3.Lerp(previous, current, smoothing);
         }
     }
 }

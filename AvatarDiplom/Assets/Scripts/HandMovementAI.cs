@@ -1,53 +1,86 @@
 ﻿using System.Collections.Generic;
+using Assets.Scripts;
 using UnityEngine;
 
 public class HandMovementAI
 {
     private Skeleton skeleton;
 
-    private Dictionary<string, Quaternion> averagedRotations = new Dictionary<string, Quaternion>();
+    private Dictionary<string, Quaternion> averagedRotations = new();
     private Dictionary<string, Queue<Quaternion>> rotationBuffer = new();
-    private Dictionary<string, Quaternion> lastOutputRotations = new Dictionary<string, Quaternion>();
+    private Dictionary<string, Quaternion> lastOutputRotations = new();
 
     private Dictionary<string, Vector3> averagedPositions = new();
     private Dictionary<string, Queue<Vector3>> positionBuffer = new();
     private Dictionary<string, Vector3> lastOutputPositions = new();
 
-    private Dictionary<string, Quaternion> initialTwist = new();
-    private bool initializedTwistReference = false;
+    private Dictionary<string, BoneConstraints> boneConstraints = new();
 
-    private float smoothing = 0.85f;
-    private float initialLearningRate = 0.7f;
-    private int trainingSamplesCount = 0;
+    private Dictionary<string, string> boneGroupMap = new();
+    private Dictionary<string, BoneConfig> boneConfigs = new();
 
-    private float minAngleThreshold = 1f;
-    private float maxAngleStep = 45f;
-    int bufferSize = 5;
+    private int bufferSize = 25;
+    private MathModelHuman humanModel;
+
+    public class BoneConfig
+    {
+        public float Smoothing = 0.85f;
+        public float MaxSwing = 45f;
+        public float MaxTwist = 90f;
+        public float MinTwist = -90f;
+    }
 
     public HandMovementAI(Skeleton skeleton)
     {
         this.skeleton = skeleton;
+        humanModel = new MathModelHuman();
+
+        boneConfigs["hand"] = new BoneConfig { Smoothing = 0.85f, MaxSwing = 45f, MaxTwist = 90f, MinTwist = -90f };
+        boneConfigs["finger"] = new BoneConfig { Smoothing = 0.65f, MaxSwing = 25f, MaxTwist = 15f, MinTwist = -15f };
+
+        string[] fingerKeywords = { "thumb", "index", "middle", "ring", "pinky" };
 
         foreach (var boneName in skeleton.Bones.Keys)
         {
             averagedRotations[boneName] = Quaternion.identity;
             lastOutputRotations[boneName] = Quaternion.identity;
-        }
-    }
 
-    private Quaternion GetTwist(Quaternion q, Vector3 twistAxis)
-    {
-        DecomposeSwingTwist(q, twistAxis, out _, out Quaternion twist);
-        return twist;
+            string lowerName = boneName.ToLower();
+
+            if (lowerName.Contains("hand"))
+            {
+                boneGroupMap[boneName] = "hand";
+            }
+            else
+            {
+                bool isFinger = false;
+                foreach (var keyword in fingerKeywords)
+                {
+                    if (lowerName.Contains(keyword))
+                    {
+                        boneGroupMap[boneName] = "finger";
+                        isFinger = true;
+                        break;
+                    }
+                }
+                if (!isFinger)
+                {
+                    boneGroupMap[boneName] = "finger";
+                }
+            }
+
+            boneConstraints[boneName] = new BoneConstraints
+            {
+                TwistAxis = ComputeBoneDirection(skeleton.Bones[boneName]),
+                MinTwistAngle = boneConfigs[boneGroupMap[boneName]].MinTwist,
+                MaxTwistAngle = boneConfigs[boneGroupMap[boneName]].MaxTwist,
+                MaxSwingAngle = boneConfigs[boneGroupMap[boneName]].MaxSwing
+            };
+        }
     }
 
     public void AddTrainingSample(Dictionary<string, Vector3> observedWorldPositions)
     {
-        trainingSamplesCount++;
-
-        float adaptiveRate = Mathf.Clamp01(1f - Mathf.Exp(-0.1f * trainingSamplesCount));
-        float learningRate = Mathf.Lerp(0.3f, 0.9f, adaptiveRate);
-
         foreach (var kvp in observedWorldPositions)
         {
             if (!skeleton.Bones.ContainsKey(kvp.Key))
@@ -62,103 +95,68 @@ public class HandMovementAI
 
             Vector3 directionWorld = (currentWorldPos - parentWorldPos).normalized;
             Quaternion parentRot = bone.Parent.GetWorldRotation();
-            Quaternion desiredRot = Quaternion.LookRotation(directionWorld, Vector3.down);
+            Quaternion desiredRot = Quaternion.LookRotation(directionWorld, Vector3.up);
             Quaternion localRot = Quaternion.Inverse(parentRot) * desiredRot;
 
-            if (kvp.Key.ToLower().Contains("shoulder") || kvp.Key.ToLower().Contains("forearm") ||
-                kvp.Key.ToLower().Contains("upperArm") || kvp.Key.ToLower().Contains("hand"))
+            if (boneConstraints.ContainsKey(kvp.Key))
             {
-                Vector3 twistAxis = bone.LocalPosition.normalized;
-                twistAxis.z = -twistAxis.z;
-                /*twistAxis.x = -twistAxis.x;
-                twistAxis.y = -twistAxis.y;*/
-                Quaternion swing, twist;
+                var constraint = boneConstraints[kvp.Key];
+                Vector3 twistAxis = constraint.TwistAxis;
 
-                if (!initializedTwistReference)
-                {
-                    Quaternion baseTwist = GetTwist(localRot, twistAxis);
-                    initialTwist[kvp.Key] = baseTwist;
-                }
+                DecomposeSwingTwist(localRot, twistAxis, out Quaternion swing, out Quaternion twist);
 
-                DecomposeSwingTwist(localRot, twistAxis, out swing, out twist);
+                float twistAngle = Vector3.SignedAngle(twistAxis, twist * twistAxis, twistAxis);
+                twistAngle = Mathf.Clamp(twistAngle, constraint.MinTwistAngle, constraint.MaxTwistAngle);
+                twist = Quaternion.AngleAxis(twistAngle, twistAxis);
 
-                if (initialTwist.ContainsKey(kvp.Key))
-                {
-                    twist = Quaternion.Inverse(initialTwist[kvp.Key]) * twist;
-                }
+                swing.ToAngleAxis(out float swingAngle, out Vector3 swingAxis);
+                swingAngle = Mathf.Clamp(swingAngle, 0f, constraint.MaxSwingAngle);
+                swing = Quaternion.AngleAxis(swingAngle, swingAxis);
 
-                float angle;
-                Vector3 axis;
-                twist.ToAngleAxis(out angle, out axis);
-                angle = Mathf.Clamp(angle, -90f, 90f);
-                twist = Quaternion.AngleAxis(angle, axis);
                 localRot = swing * twist;
-
-                if (initialTwist.ContainsKey(kvp.Key))
-                {
-                    localRot = localRot * initialTwist[kvp.Key];
-                }
             }
 
             if (!rotationBuffer.ContainsKey(kvp.Key))
                 rotationBuffer[kvp.Key] = new Queue<Quaternion>();
-
-            var buffer = rotationBuffer[kvp.Key];
-            buffer.Enqueue(localRot);
-            if (buffer.Count > bufferSize)
-                buffer.Dequeue();
-
-            Quaternion avg = AverageQuaternions(buffer.ToArray());
-            averagedRotations[kvp.Key] = avg;
+            rotationBuffer[kvp.Key].Enqueue(localRot);
+            if (rotationBuffer[kvp.Key].Count > bufferSize)
+                rotationBuffer[kvp.Key].Dequeue();
+            averagedRotations[kvp.Key] = AverageQuaternions(rotationBuffer[kvp.Key].ToArray());
 
             if (!positionBuffer.ContainsKey(kvp.Key))
                 positionBuffer[kvp.Key] = new Queue<Vector3>();
-
-            var posBuffer = positionBuffer[kvp.Key];
-            posBuffer.Enqueue(currentWorldPos);
-            if (posBuffer.Count > bufferSize)
-                posBuffer.Dequeue();
-
-            Vector3 avgPos = AverageVectors(posBuffer.ToArray());
-            averagedPositions[kvp.Key] = avgPos;
-
-            initializedTwistReference = true;
+            positionBuffer[kvp.Key].Enqueue(currentWorldPos);
+            if (positionBuffer[kvp.Key].Count > bufferSize)
+                positionBuffer[kvp.Key].Dequeue();
+            averagedPositions[kvp.Key] = AverageVectors(positionBuffer[kvp.Key].ToArray());
         }
-    }
-
-    private Vector3 AverageVectors(Vector3[] vectors)
-    {
-        if (vectors.Length == 0) return Vector3.zero;
-
-        Vector3 sum = Vector3.zero;
-        foreach (var v in vectors)
-            sum += v;
-
-        return sum / vectors.Length;
     }
 
     public void ApplyLearnedPose()
     {
         foreach (var kvp in skeleton.Bones)
         {
-            string name = kvp.Key;
+            string boneName = kvp.Key;
             Bone bone = kvp.Value;
 
-            Quaternion current = lastOutputRotations.ContainsKey(name) ? lastOutputRotations[name] : Quaternion.identity;
-            Quaternion target = averagedRotations.ContainsKey(name) ? averagedRotations[name] : Quaternion.identity;
+            string group = boneGroupMap.ContainsKey(boneName) ? boneGroupMap[boneName] : "finger";
+            var config = boneConfigs[group];
+
+            Quaternion current = lastOutputRotations[boneName];
+            Quaternion target = averagedRotations[boneName];
 
             float angleDelta = Quaternion.Angle(current, target);
-            float adaptiveSmoothing = Mathf.Lerp(0.3f, smoothing, angleDelta / 90f);
+            float adaptiveSmoothing = Mathf.Lerp(0.3f, config.Smoothing, angleDelta / 90f);
 
             Quaternion result = Quaternion.Slerp(current, target, adaptiveSmoothing);
 
             bone.LocalRotation = result;
-            lastOutputRotations[name] = result;
+            lastOutputRotations[boneName] = result;
 
-            if (averagedPositions.ContainsKey(name))
+            if (averagedPositions.ContainsKey(boneName))
             {
                 Vector3 currentPos = bone.GetWorldPosition();
-                Vector3 targetPos = averagedPositions[name];
+                Vector3 targetPos = averagedPositions[boneName];
                 Vector3 smoothedPos = Vector3.Lerp(currentPos, targetPos, adaptiveSmoothing);
 
                 if (bone.Parent != null)
@@ -167,16 +165,29 @@ public class HandMovementAI
                     Vector3 localPos = Quaternion.Inverse(bone.Parent.GetWorldRotation()) * (smoothedPos - parentPos);
                     bone.LocalPosition = localPos;
                 }
-
-                lastOutputPositions[name] = smoothedPos;
+                lastOutputPositions[boneName] = smoothedPos;
             }
         }
     }
 
-    public Dictionary<string, Vector3> GetWorldPose()
+    public void Update(float dt)
     {
-        return skeleton.GetWorldPositions();
+        humanModel.muscleTorque = new Vector2(0.5f, -0.3f);
+        humanModel.Update(dt);
+
+        Vector2 angles = humanModel.GetJointAngles();
+        if (skeleton.Bones.TryGetValue("upperArm", out Bone upperArm))
+        {
+            upperArm.LocalRotation = Quaternion.Euler(0, 0, angles.x * Mathf.Rad2Deg);
+        }
+
+        if (skeleton.Bones.TryGetValue("forearm", out Bone forearm))
+        {
+            forearm.LocalRotation = Quaternion.Euler(0, 0, angles.y * Mathf.Rad2Deg);
+        }
     }
+
+    public Dictionary<string, Vector3> GetWorldPose() => skeleton.GetWorldPositions();
 
     public void SetWorldPose(Dictionary<string, Vector3> worldPositions)
     {
@@ -202,25 +213,35 @@ public class HandMovementAI
         }
     }
 
-    private Quaternion AverageQuaternions(Quaternion[] quaternions)
+    private Vector3 AverageVectors(Vector3[] vectors)
     {
-        if (quaternions.Length == 0) return Quaternion.identity;
-
-        Quaternion cumulative = quaternions[0];
-        for (int i = 1; i < quaternions.Length; i++)
-        {
-            cumulative = Quaternion.Slerp(cumulative, quaternions[i], 1f / (i + 1));
-        }
-        return cumulative;
+        if (vectors.Length == 0) return Vector3.zero;
+        Vector3 sum = Vector3.zero;
+        foreach (var v in vectors) sum += v;
+        return sum / vectors.Length;
     }
 
-    private void DecomposeSwingTwist(Quaternion q, Vector3 twistAxis, out Quaternion swing, out Quaternion twist)
+    private Quaternion AverageQuaternions(Quaternion[] quats)
     {
-        Vector3 ra = new Vector3(q.x, q.y, q.z);
-        Vector3 proj = Vector3.Project(ra, twistAxis.normalized);
-        twist = new Quaternion(proj.x, proj.y, proj.z, q.w);
-        twist = Quaternion.Normalize(twist);
+        if (quats.Length == 0) return Quaternion.identity;
+        Quaternion avg = quats[0];
+        for (int i = 1; i < quats.Length; i++)
+            avg = Quaternion.Slerp(avg, quats[i], 1f / (i + 1));
+        return avg;
+    }
 
-        swing = q * Quaternion.Inverse(twist);
+    private void DecomposeSwingTwist(Quaternion rot, Vector3 twistAxis, out Quaternion swing, out Quaternion twist)
+    {
+        twistAxis.Normalize();
+        Vector3 proj = Vector3.Project(rot * twistAxis, twistAxis);
+        twist = Quaternion.FromToRotation(rot * twistAxis, proj) * rot;
+        twist.Normalize();
+        swing = rot * Quaternion.Inverse(twist);
+    }
+
+    private Vector3 ComputeBoneDirection(Bone bone)
+    {
+        if (bone.Parent == null) return Vector3.forward;
+        return bone.LocalPosition.normalized;
     }
 }

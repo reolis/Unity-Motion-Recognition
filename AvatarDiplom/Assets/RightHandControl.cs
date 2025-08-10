@@ -44,7 +44,7 @@ public class RightHandControl : MonoBehaviour
 
         rightSkeleton = new Skeleton();
 
-        rightSkeleton.AddBone("B-hand.R", null, hand.localPosition);
+        rightSkeleton.AddBone("B-hand.R", null, Vector3.zero);
 
         rightSkeleton.AddBone("B-thumb1.R", "B-hand.R", thumb1.localPosition - hand.localPosition);
         rightSkeleton.AddBone("B-thumb2.R", "B-thumb1.R", thumb2.localPosition - thumb1.localPosition);
@@ -76,7 +76,6 @@ public class RightHandControl : MonoBehaviour
         while (ConnectToApp.rightHandQueue.TryDequeue(out BoneData boneData))
         {
             if (!boneData.boneName.EndsWith(".R")) continue;
-
             newPositions[boneData.boneName] = boneData.position;
         }
 
@@ -88,7 +87,6 @@ public class RightHandControl : MonoBehaviour
             foreach (var kvp in bones)
             {
                 if (!rightSkeleton.Bones.ContainsKey(kvp.Key)) continue;
-
                 var bone = rightSkeleton.Bones[kvp.Key];
                 kvp.Value.localRotation = bone.LocalRotation;
             }
